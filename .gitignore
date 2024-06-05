@@ -129,9 +129,3 @@ dist
 .yarn/install-state.gz
 .pnp.*
 messageGenerator/node_modules/
-minio-data/*
-!minio-data/
-iceberg/notebooks/*
-!iceberg/notebooks/
-iceberg/warehouse/*
-!iceberg/warehouse/
