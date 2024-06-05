@@ -1,0 +1,188 @@
+  version: '3.7'
+  services:
+  # ICEBERG 
+    spark-iceberg:
+      image: tabulario/spark-iceberg
+      container_name: spark-iceberg
+      build: spark/
+      networks:
+        wba-network:
+      depends_on:
+        - rest
+        - minio
+      volumes:
+        - ./iceberg/warehouse:/home/iceberg/warehouse
+        - ./iceberg/notebooks:/home/iceberg/notebooks/notebooks
+      environment:
+        - AWS_ACCESS_KEY_ID=admin
+        - AWS_SECRET_ACCESS_KEY=password
+        - AWS_REGION=us-east-1
+      ports:
+        - 8888:8888
+        - 8080:8080
+        - 10000:10000
+        - 10001:10001
+    rest:
+      image: tabulario/iceberg-rest
+      container_name: iceberg-rest
+      networks:
+        wba-network:
+      ports:
+        - 8181:8181
+      environment:
+        - AWS_ACCESS_KEY_ID=admin
+        - AWS_SECRET_ACCESS_KEY=password
+        - AWS_REGION=us-east-1
+        - CATALOG_WAREHOUSE=s3://warehouse/
+        - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+        - CATALOG_S3_ENDPOINT=http://minio:9000
+    minio:
+      image: minio/minio
+      container_name: minio
+      environment:
+        - MINIO_ROOT_USER=admin
+        - MINIO_ROOT_PASSWORD=password
+        - MINIO_DOMAIN=minio
+      volumes:
+        - ./minio-data:/data  
+      networks:
+        wba-network:
+          aliases:
+            - warehouse.minio
+      ports:
+        - 9001:9001
+        - 9002:9000
+      command: ["server", "/data", "--console-address", ":9001"]
+    mc:
+      depends_on:
+        - minio
+      image: minio/mc
+      container_name: mc
+      networks:
+        wba-network:
+      environment:
+        - AWS_ACCESS_KEY_ID=admin
+        - AWS_SECRET_ACCESS_KEY=password
+        - AWS_REGION=us-east-1
+      entrypoint: >
+        /bin/sh -c "
+        until (/usr/bin/mc config host add minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+        /usr/bin/mc rm -r --force minio/warehouse;
+        /usr/bin/mc mb minio/warehouse;
+        /usr/bin/mc policy set public minio/warehouse;
+        tail -f /dev/null
+        "   
+
+    # superset
+    superset:
+      # depends_on:
+      #   - trino # to do
+      build: 
+        context: ./superset
+        dockerfile: Dockerfile
+      container_name: superset
+      networks:
+        wba-network:
+      environment:
+        - SUPERSET_SECRET_KEY=your_secret_key_here
+      ports:
+        - 18081:8088    
+
+
+
+    trino:
+      image: trinodb/trino:latest
+      container_name: "trino"
+      environment:
+        - AWS_ACCESS_KEY_ID=admin
+        - AWS_SECRET_ACCESS_KEY=password
+        - AWS_REGION=us-east-1
+        # CATALOG_MANAGEMENT: dynamic
+      volumes:
+       - ./trino/iceberg.properties:/etc/trino/catalog/iceberg.properties
+       - ./trino/pinot.properties:/etc/trino/catalog/pinot.properties
+      ports:
+        - 18080:8080
+      depends_on:
+        - pinot-controller
+      networks:
+        - wba-network        
+
+    kafka:
+      image: bitnami/kafka:latest
+      container_name: "kafka"
+      ports:
+        - 9094:9094
+      environment:
+        KAFKA_ZOOKEEPER_CONNECT: pinot-zookeeper:2181/kafka
+        KAFKA_BROKER_ID: 0 
+        KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094
+        KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+        KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      depends_on:
+        - pinot-zookeeper
+      networks:
+        - wba-network
+    
+    pinot-zookeeper:
+      image: zookeeper:3.5.6
+      container_name: pinot-zookeeper
+      ports:
+        - "2181:2181"
+      environment:
+        ZOOKEEPER_CLIENT_PORT: 2181
+        ZOOKEEPER_TICK_TIME: 2000
+      networks:
+        - wba-network
+    pinot-controller:
+      image: apachepinot/pinot:1.1.0
+      command: "StartController -zkAddress pinot-zookeeper:2181"
+      container_name: pinot-controller
+      restart: unless-stopped
+      volumes:
+        - ./pinot-metadata/controller:/tmp
+      ports:
+        - "9000:9000"
+      environment:
+        JAVA_OPTS: "-Dplugins.dir=/opt/pinot/plugins -Xms1G -Xmx4G -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xloggc:gc-pinot-controller.log"
+      depends_on:
+        - pinot-zookeeper
+      networks:
+        - wba-network
+    pinot-broker:
+      image: apachepinot/pinot:1.1.0
+      command: "StartBroker -zkAddress pinot-zookeeper:2181"
+      restart: unless-stopped
+      container_name: "pinot-broker"
+      ports:
+        - "8099:8099"
+      environment:
+        JAVA_OPTS: "-Dplugins.dir=/opt/pinot/plugins -Xms4G -Xmx4G -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xloggc:gc-pinot-broker.log"
+      depends_on:
+        - pinot-controller
+      networks:
+        - wba-network
+    pinot-server:
+      image: apachepinot/pinot:1.1.0
+      command: "StartServer -zkAddress pinot-zookeeper:2181"
+      restart: unless-stopped
+      container_name: "pinot-server"
+      volumes:
+        - ./pinot-metadata/server:/tmp
+      ports:
+        - "8098:8098"
+      environment:
+        JAVA_OPTS: "-Dplugins.dir=/opt/pinot/plugins -Xms4G -Xmx16G -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xloggc:gc-pinot-server.log"
+      depends_on:
+        - pinot-broker
+      networks:
+        - wba-network
+
+  networks:
+    wba-network:
+      driver: bridge
+
+
+
+  
+  

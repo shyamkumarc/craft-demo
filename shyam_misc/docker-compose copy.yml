@@ -1,0 +1,131 @@
+  version: '3.7'
+  services:
+    minio:
+      hostname: minio
+      container_name: minio
+      image: 'minio/minio:RELEASE.2024-01-13T07-53-03Z'
+      ports:
+        - '9090:9000'
+        - '9091:9001'
+      volumes:
+        - ./minio-data:/data
+      environment:
+        MINIO_ROOT_USER: accesskey
+        MINIO_ROOT_PASSWORD: secretkey
+      command: server /data --console-address ":9001"
+      networks:
+        - wba-network
+
+
+    createbucket:
+      hostname: createbucket
+      container_name: createbucket
+      image: minio/mc:RELEASE.2024-01-13T08-44-48Z
+      depends_on:
+      - minio
+      entrypoint: >
+        /bin/sh -c "
+        /usr/bin/mc alias set myminio http://minio:9000 accesskey secretkey;
+        /usr/bin/mc mb myminio/data-bucket;
+        /usr/bin/mc anonymous set public myminio/data-bucket;
+        /usr/bin/mc mb myminio/pinot;
+        /usr/bin/mc anonymous set public myminio/pinot;
+        "
+      networks:
+        - wba-network  
+    spark-master:
+      hostname: spark-master
+      container_name: spark-master
+      image: bitnami/spark:3.4.1
+      command: bin/spark-class org.apache.spark.deploy.master.Master
+      volumes:
+        - ./spark-apps:/opt/spark-apps
+        # - ./spark-config/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+        # - ./spark-config/hive-site.xml:/opt/bitnami/spark/conf/hive-site.xml
+      ports:
+        - "8080:8080"
+        - "7077:7077"
+      networks:
+        - wba-network
+
+
+
+
+    pinot-zookeeper:
+      image: zookeeper:3.5.6
+      container_name: pinot-zookeeper
+      ports:
+        - "2181:2181"
+      environment:
+        ZOOKEEPER_CLIENT_PORT: 2181
+        ZOOKEEPER_TICK_TIME: 2000
+      networks:
+        - wba-network
+    pinot-controller:
+      image: apachepinot/pinot:1.1.0
+      command: "StartController -zkAddress pinot-zookeeper:2181 -configFileName /tmp/controller.conf"
+      container_name: pinot-controller
+      restart: unless-stopped
+      volumes:
+        - ./pinot-metadata/controller:/tmp
+      ports:
+        - "9000:9000"
+      environment:
+        JAVA_OPTS: "-Dplugins.dir=/opt/pinot/plugins -Xms1G -Xmx4G -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xloggc:gc-pinot-controller.log"
+      depends_on:
+        - pinot-zookeeper
+      networks:
+        - wba-network
+    pinot-broker:
+      image: apachepinot/pinot:1.1.0
+      command: "StartBroker -zkAddress pinot-zookeeper:2181 -clusterName pinot-s3-example-docker"
+      restart: unless-stopped
+      container_name: "pinot-broker"
+      ports:
+        - "8099:8099"
+      environment:
+        JAVA_OPTS: "-Dplugins.dir=/opt/pinot/plugins -Xms4G -Xmx4G -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xloggc:gc-pinot-broker.log"
+      depends_on:
+        - pinot-controller
+      networks:
+        - wba-network
+    pinot-server:
+      image: apachepinot/pinot:1.1.0
+      command: "StartServer -zkAddress pinot-zookeeper:2181 -clusterName pinot-s3-example-docker -configFileName /tmp/server.conf"
+      restart: unless-stopped
+      container_name: "pinot-server"
+      volumes:
+        - ./pinot-metadata/server:/tmp
+      ports:
+        - "8098:8098"
+      environment:
+        JAVA_OPTS: "-Dplugins.dir=/opt/pinot/plugins -Xms4G -Xmx16G -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xloggc:gc-pinot-server.log"
+      depends_on:
+        - pinot-broker
+      networks:
+        - wba-network
+
+    kafka:
+      image: bitnami/kafka:latest
+      container_name: "kafka"
+      ports:
+        - 9094:9094
+      environment:
+        KAFKA_ZOOKEEPER_CONNECT: pinot-zookeeper:2181/kafka
+        KAFKA_BROKER_ID: 0 
+        KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094
+        KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+        KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      depends_on:
+        - pinot-zookeeper
+      networks:
+        - wba-network
+
+  networks:
+    wba-network:
+      driver: bridge
+
+
+
+  
+  

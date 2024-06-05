@@ -1,0 +1,22 @@
+// ujse this in spark shell - assumption is that the bucket in minio is "data-bucket" , i.e http://minio:9000/data-bucket
+
+  val s3accessKeyAws = "accesskey"
+  val s3secretKeyAws = "secretkey"
+  val connectionTimeOut = "600000"
+  val s3endPointLoc: String = "http://minio:9000"
+
+
+  spark.sparkContext.hadoopConfiguration.set("fs.s3a.endpoint", s3endPointLoc)
+  spark.sparkContext.hadoopConfiguration.set("fs.s3a.access.key", s3accessKeyAws)
+  spark.sparkContext.hadoopConfiguration.set("fs.s3a.secret.key", s3secretKeyAws)
+  spark.sparkContext.hadoopConfiguration.set("fs.s3a.connection.timeout", connectionTimeOut)
+
+  spark.sparkContext.hadoopConfiguration.set("spark.sql.debug.maxToStringFields", "100")
+  spark.sparkContext.hadoopConfiguration.set("fs.s3a.path.style.access", "true")
+  spark.sparkContext.hadoopConfiguration.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+  spark.sparkContext.hadoopConfiguration.set("fs.s3a.connection.ssl.enabled", "true")
+
+    val sourceBucket: String = "data-bucket"
+  val inputPath: String = s"s3a://$sourceBucket/test.csv"
+
+    val df = spark.read.option("header", "true").csv(inputPath)
